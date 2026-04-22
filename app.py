@@ -4,8 +4,7 @@ from datetime import datetime, timedelta, time
 
 st.set_page_config(page_title="TDC Trade Ops AI", layout="wide")
 
-# --- INITIALIZE SESSION STATE ---
-# This prevents the "Script Error" by ensuring dates exist before the app loads
+# --- SESSION STATE INITIALIZATION ---
 if 'nor_val' not in st.session_state:
     st.session_state.nor_val = datetime(2026, 2, 1, 0, 1)
 if 'commenced_val' not in st.session_state:
@@ -13,7 +12,7 @@ if 'commenced_val' not in st.session_state:
 if 'completed_val' not in st.session_state:
     st.session_state.completed_val = datetime(2026, 3, 9, 4, 0)
 
-def tdc_final_stable_engine():
+def tdc_master_engine():
     st.title("🚢 TDC International: Master Laytime Platform")
     
     # --- 1. SIDEBAR: CONTRACTUALS ---
@@ -23,7 +22,7 @@ def tdc_final_stable_engine():
         rate = st.number_input("Load/Disch Rate (MT/Day)", value=5000.0)
         demu_rate = st.number_input("Demurrage Rate ($/Day)", value=16500.0)
         desp_rate = demu_rate / 2
-        st.write(f"**Despatch Rate (Auto 50%):** ${desp_rate:,.2f}")
+        st.info(f"**Despatch Rate:** ${desp_rate:,.2f} / day")
         
         st.header("2. Working Rules")
         laycan_start = st.date_input("Laycan Start Date", value=datetime(2026, 2, 10))
@@ -39,16 +38,11 @@ def tdc_final_stable_engine():
             "LAFAMA Rule (12:00 PM Custom)", "6:00 PM / 8:00 AM Rule"
         ])
 
-    # --- 2. THE FILE UPLOADER & SMART DATA EXTRACTION ---
+    # --- 2. DOCUMENT UPLOADER ---
     st.subheader("📂 Document Management")
     uploaded_file = st.file_uploader("Upload SOF", type=["pdf", "docx", "jpg", "jpeg", "png", "xlsx"])
-    
-    # If a file is uploaded, we update the session state automatically
     if uploaded_file:
-        st.success(f"✅ Data Extracted from {uploaded_file.name}")
-        st.session_state.nor_val = datetime(2026, 2, 1, 0, 1)
-        st.session_state.commenced_val = datetime(2026, 2, 28, 6, 0)
-        st.session_state.completed_val = datetime(2026, 3, 9, 4, 0)
+        st.success(f"✅ Document '{uploaded_file.name}' Active")
 
     st.markdown("---")
 
@@ -56,23 +50,21 @@ def tdc_final_stable_engine():
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("⏱️ Key Timestamps")
-        # We use the session_state values here
         nor_tendered = st.datetime_input("NOR Tendered", value=st.session_state.nor_val)
         ops_commenced = st.datetime_input("Loading Commenced", value=st.session_state.commenced_val)
         ops_completed = st.datetime_input("Loading Completed", value=st.session_state.completed_val)
 
     with col2:
-        st.subheader("⛈️ Deductions")
-        st.caption("Weather/Port interruptions.")
+        st.subheader("⛈️ Deductions (Weather/Port)")
         sof_events = st.data_editor(
             pd.DataFrame([
                 {"Remark": "Port Closed (Weather)", "Start": datetime(2026, 2, 2, 12, 0), "End": datetime(2026, 2, 16, 23, 59)},
             ]), num_rows="dynamic", use_container_width=True
         )
 
-    # --- 4. CALCULATION ENGINE ---
+    # --- 4. CALCULATION CORE ---
     if rate > 0 and qty > 0:
-        # Turn Time Logic
+        # Turn Time
         if nor_rule_type == "12 Hour Turn Time": 
             tt_expiry = nor_tendered + timedelta(hours=12)
         elif nor_rule_type == "24h Turn Time": 
@@ -93,7 +85,7 @@ def tdc_final_stable_engine():
         trigger = min(tt_expiry, ops_commenced)
         laytime_start = max(trigger, ops_commenced) if trigger < lc_start_dt else trigger
 
-        # Engine Loop
+        # Engine
         allowed_sec = (qty / rate) * 86400
         curr = laytime_start
         used_sec = 0
@@ -119,20 +111,39 @@ def tdc_final_stable_engine():
             else: used_sec += step
             curr += timedelta(seconds=step)
 
-        # --- 5. RESULTS ---
+        # --- 5. THE FIX: EXPLICIT RESULTS ---
         st.markdown("---")
-        r1, r2 = st.columns(2)
+        st.subheader("📊 Final Calculation Result")
         
-        if ops_completed > curr:
-            diff = (ops_completed - curr).total_seconds() / 86400
-            r1.error(f"⚠️ ON DEMURRAGE\n\nTotal Owed: ${diff * demu_rate:,.2f}")
-        else:
-            diff = (curr - ops_completed).total_seconds() / 86400
-            r1.success(f"✅ IN DESPATCH\n\nTotal Earned: ${diff * desp_rate:,.2f}")
+        res_box, audit_box = st.columns([2, 1])
 
-        r2.write(f"**Laytime Start:** {laytime_start.strftime('%Y-%m-%d %H:%M')}")
-        r2.write(f"**Final Expiry:** {curr.strftime('%Y-%m-%d %H:%M')}")
-        r2.write(f"**Time Saved/Exceeded:** {diff:.4f} days")
+        # Logic for Despatch vs Demurrage
+        if ops_completed > curr:
+            # BEHIND SCHEDULE (Demurrage)
+            time_lost_sec = (ops_completed - curr).total_seconds()
+            days_lost = time_lost_sec / 86400
+            total_money = days_lost * demu_rate
+            
+            res_box.error(f"🚨 STATUS: ON DEMURRAGE\n\n**Total Due: ${total_money:,.2f}**")
+            audit_box.write(f"📉 **Time Lost:** {days_lost:.4f} days")
+            audit_box.write(f"({timedelta(seconds=int(time_lost_sec))} HH:MM:SS)")
+        
+        else:
+            # AHEAD OF SCHEDULE (Despatch)
+            time_saved_sec = (curr - ops_completed).total_seconds()
+            days_saved = time_saved_sec / 86400
+            total_money = days_saved * desp_rate
+            
+            res_box.success(f"💰 STATUS: IN DESPATCH\n\n**Total Credit: ${total_money:,.2f}**")
+            audit_box.write(f"📈 **Time Saved:** {days_saved:.4f} days")
+            audit_box.write(f"({timedelta(seconds=int(time_saved_sec))} HH:MM:SS)")
+
+        # Audit Summary Details
+        st.markdown("### 🔍 Audit Trail")
+        a1, a2, a3 = st.columns(3)
+        a1.metric("Laytime Start", laytime_start.strftime('%d-%b %H:%M'))
+        a2.metric("Expiry Wall", curr.strftime('%d-%b %H:%M'))
+        a3.metric("Total Allowed", f"{allowed_sec/86400:.2f} Days")
 
 if __name__ == "__main__":
-    tdc_final_stable_engine()
+    tdc_master_engine()
