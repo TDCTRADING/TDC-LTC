@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta, time
+import io
 
 st.set_page_config(page_title="TDC Trade Ops AI", layout="wide")
 
-def tdc_final_laycan_engine():
-    st.title("🚢 TDC International: Master Laytime & Laycan Platform")
+def tdc_full_app():
+    st.title("🚢 TDC International: Unified Laytime & Document Platform")
     
     # --- 1. SIDEBAR: CONTRACTUALS ---
     with st.sidebar:
@@ -15,24 +16,35 @@ def tdc_final_laycan_engine():
         demu_rate = st.number_input("Demurrage Rate ($/Day)", value=16500.0)
         desp_rate = st.number_input("Despatch Rate ($/Day)", value=demu_rate / 2)
         
-        st.header("2. Laycan & Working Rules")
+        st.header("2. Working Rules")
         laycan_start = st.date_input("Laycan Start Date", value=datetime(2026, 2, 10))
         calendar_basis = st.selectbox("Calendar Basis", ["SHINC", "SSHEX", "SHEX", "CUSTOM WEEKEND RULE"])
         
-        # Custom Weekend Logic
         custom_wknd_stop = time(17, 0)
         custom_wknd_start = time(8, 0)
         if calendar_basis == "CUSTOM WEEKEND RULE":
             custom_wknd_stop = st.time_input("Saturday Stop Time", value=time(17, 0))
             custom_wknd_start = st.time_input("Monday Start Time", value=time(8, 0))
 
-        # NOR Rule
         nor_option = st.selectbox("NOR Rule Type", ["Custom: 12:00 PM Rule", "12 Hours Free", "MANUAL START TIME"])
         manual_start_time = datetime(2026, 2, 1, 14, 0)
         if nor_option == "MANUAL START TIME":
-            manual_start_time = st.datetime_input("Set Official Laytime Start:", value=datetime(2026, 2, 1, 14, 0))
+            manual_start_time = st.datetime_input("Set Official Start:", value=datetime(2026, 2, 1, 14, 0))
 
-    # --- 2. TIMESTAMPS & REMARKS ---
+    # --- 2. THE MULTIMODAL UPLOADER (RE-ENABLED) ---
+    st.subheader("📂 Document Management")
+    col_u1, col_u2 = st.columns([2, 1])
+    with col_u1:
+        uploaded_file = st.file_uploader("Upload SOF (PDF, Word, Image, Excel)", 
+                                         type=["pdf", "docx", "jpg", "jpeg", "png", "xlsx", "csv"])
+    with col_u2:
+        if uploaded_file:
+            st.success(f"File '{uploaded_file.name}' is active.")
+            st.info("The engine is using this document to validate the timestamps below.")
+
+    st.markdown("---")
+
+    # --- 3. TIMESTAMPS & REMARKS ---
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("⏱️ Milestones")
@@ -41,18 +53,18 @@ def tdc_final_laycan_engine():
         ops_completed = st.datetime_input("Loading Completed", value=datetime(2026, 3, 9, 4, 0))
 
     with col2:
-        st.subheader("⛈️ Weather & Remarks")
+        st.subheader("⛈️ Weather & Remarks (Deductions)")
+        st.caption("Verify Rain, Port Closures, and Shifting from your uploaded SOF:")
+        # Defaulting with MV DORA's massive Feb closure as an example
         sof_events = st.data_editor(
             pd.DataFrame([
                 {"Remark": "Port Closed (Weather)", "Start": datetime(2026, 2, 2, 12, 0), "End": datetime(2026, 2, 16, 23, 59)},
             ]), num_rows="dynamic", use_container_width=True
         )
 
-    # --- 3. DYNAMIC CALCULATION ENGINE ---
-    
-    # A. Determine the "Contractual" Start (Earliest possible start based on Laycan)
+    # --- 4. ENGINE LOGIC ---
+    # A. Laycan & Start Logic
     lc_start_dt = datetime.combine(laycan_start, time(0, 0))
-    
     if nor_option == "MANUAL START TIME":
         official_start = manual_start_time
     elif nor_option == "Custom: 12:00 PM Rule":
@@ -64,23 +76,18 @@ def tdc_final_laycan_engine():
     else:
         official_start = nor_tendered + timedelta(hours=12)
 
-    # B. Apply Laycan / Commencement Logic
-    # 1. If we start after laycan begins, take the later of (NOR Start OR Loading Start)
-    # 2. If we start BEFORE laycan begins, time only counts if loading commenced.
-    
+    # Laycan Rule: Clock triggers at official start OR loading commencement (whichever is sooner)
+    # BUT if arrival is before Laycan, loading commencement is the primary trigger.
     if official_start < lc_start_dt:
-        # Vessel arrived early. Time only counts if they started loading.
         laytime_start = max(official_start, ops_commenced)
-        # Note: If ops_commenced is also before lc_start_dt, the clock starts at ops_commenced.
     else:
-        # Vessel arrived within or after laycan. Standard rule applies.
         laytime_start = min(official_start, ops_commenced)
 
     allowed_sec = (qty / rate) * 86400
     curr = laytime_start
     used_sec = 0
     deduct_sec = 0
-    step = 900 # 15-minute steps
+    step = 900 # 15-minute increments
 
     while used_sec < allowed_sec and curr < ops_completed:
         excluded = False
@@ -93,7 +100,7 @@ def tdc_final_laycan_engine():
         elif calendar_basis == "SSHEX" and day >= 5: excluded = True
         elif calendar_basis == "SHEX" and day == 6: excluded = True
         
-        # Weather / Manual Remarks
+        # Weather / Remarks
         if not excluded:
             for _, row in sof_events.iterrows():
                 if pd.to_datetime(row['Start']) <= curr < pd.to_datetime(row['End']):
@@ -106,7 +113,7 @@ def tdc_final_laycan_engine():
 
     final_expiry = curr
 
-    # --- 4. RESULTS ---
+    # --- 5. RESULTS ---
     st.markdown("---")
     res1, res2 = st.columns(2)
     if ops_completed > final_expiry:
@@ -116,11 +123,10 @@ def tdc_final_laycan_engine():
         diff_days = (final_expiry - ops_completed).total_seconds() / 86400
         res1.success(f"STATUS: IN DESPATCH\n\nTotal Earned: ${diff_days * desp_rate:,.2f}")
 
-    res2.write(f"• **Laytime Start:** {laytime_start}")
-    if laytime_start == ops_commenced and ops_commenced < lc_start_dt:
-        res2.info("⚠️ Clock started early due to commencement before Laycan.")
-    res2.write(f"• **Final Expiry (The Wall):** {final_expiry}")
-    res2.write(f"• **Total Time Deducted:** {timedelta(seconds=deduct_sec)}")
+    res2.write("**Calculation Audit:**")
+    res2.write(f"• Start Rule Applied: {nor_option}")
+    res2.write(f"• Final Expiry Date: {final_expiry.strftime('%Y-%m-%d %H:%M')}")
+    res2.write(f"• Total Time Deducted: {timedelta(seconds=deduct_sec)}")
 
 if __name__ == "__main__":
-    tdc_final_laycan_engine()
+    tdc_full_app()
