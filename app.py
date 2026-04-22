@@ -3,10 +3,10 @@ import pandas as pd
 from datetime import datetime, timedelta, time
 import io
 
-st.set_page_config(page_title="TDC Trade Ops AI", layout="wide")
+st.set_page_config(page_title="TDC Professional Trade Desk", layout="wide")
 
-def tdc_full_app():
-    st.title("🚢 TDC International: Unified Laytime & Document Platform")
+def tdc_trade_platform():
+    st.title("🚢 TDC International: Master SOF & Laytime Platform")
     
     # --- 1. SIDEBAR: CONTRACTUALS ---
     with st.sidebar:
@@ -14,100 +14,115 @@ def tdc_full_app():
         qty = st.number_input("Cargo Quantity (MT)", value=36700.0)
         rate = st.number_input("Load Rate (MT/Day)", value=5000.0)
         demu_rate = st.number_input("Demurrage Rate ($/Day)", value=16500.0)
-        desp_rate = st.number_input("Despatch Rate ($/Day)", value=demu_rate / 2)
+        desp_rate = st.number_input("Despatch Rate ($/Day)", value=8250.0)
         
-        st.header("2. Working Rules")
+        st.header("2. Laycan & Working Rules")
         laycan_start = st.date_input("Laycan Start Date", value=datetime(2026, 2, 10))
-        calendar_basis = st.selectbox("Calendar Basis", ["SHINC", "SSHEX", "SHEX", "CUSTOM WEEKEND RULE"])
         
-        custom_wknd_stop = time(17, 0)
-        custom_wknd_start = time(8, 0)
-        if calendar_basis == "CUSTOM WEEKEND RULE":
-            custom_wknd_stop = st.time_input("Saturday Stop Time", value=time(17, 0))
-            custom_wknd_start = st.time_input("Monday Start Time", value=time(8, 0))
+        calendar_basis = st.selectbox("Calendar Basis", [
+            "SHINC", "SSHEX", "SHEX", "SSHEX UNLESS USED", "SHEX UNLESS USED"
+        ])
 
-        nor_option = st.selectbox("NOR Rule Type", ["Custom: 12:00 PM Rule", "12 Hours Free", "MANUAL START TIME"])
-        manual_start_time = datetime(2026, 2, 1, 14, 0)
-        if nor_option == "MANUAL START TIME":
-            manual_start_time = st.datetime_input("Set Official Start:", value=datetime(2026, 2, 1, 14, 0))
+        nor_rule_type = st.selectbox("NOR Rule Type", [
+            "12 Hour Turn Time",
+            "24h Turn Time",
+            "LAFAMA Rule (12:00 PM Custom)",
+            "6:00 PM / 8:00 AM Rule"
+        ])
 
-    # --- 2. THE MULTIMODAL UPLOADER (RE-ENABLED) ---
-    st.subheader("📂 Document Management")
-    col_u1, col_u2 = st.columns([2, 1])
-    with col_u1:
-        uploaded_file = st.file_uploader("Upload SOF (PDF, Word, Image, Excel)", 
-                                         type=["pdf", "docx", "jpg", "jpeg", "png", "xlsx", "csv"])
-    with col_u2:
-        if uploaded_file:
-            st.success(f"File '{uploaded_file.name}' is active.")
-            st.info("The engine is using this document to validate the timestamps below.")
+    # --- 2. MULTI-FORMAT UPLOADER ---
+    st.subheader("📂 Document Management (PDF, Word, Images, Excel)")
+    uploaded_file = st.file_uploader("Upload Statement of Facts", type=["pdf", "docx", "jpg", "jpeg", "png", "xlsx"])
+    
+    if uploaded_file:
+        st.success(f"✅ {uploaded_file.name} successfully attached to this calculation.")
+        # If it's an image, let the user see it to read remarks
+        if uploaded_file.type.startswith('image/'):
+            st.image(uploaded_file, caption="SOF Preview", width=400)
 
     st.markdown("---")
 
-    # --- 3. TIMESTAMPS & REMARKS ---
+    # --- 3. MILESTONES ---
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("⏱️ Milestones")
+        st.subheader("⏱️ Key Timestamps")
         nor_tendered = st.datetime_input("NOR Tendered", value=datetime(2026, 2, 1, 0, 1))
         ops_commenced = st.datetime_input("Loading Commenced", value=datetime(2026, 2, 28, 6, 0))
         ops_completed = st.datetime_input("Loading Completed", value=datetime(2026, 3, 9, 4, 0))
 
     with col2:
-        st.subheader("⛈️ Weather & Remarks (Deductions)")
-        st.caption("Verify Rain, Port Closures, and Shifting from your uploaded SOF:")
-        # Defaulting with MV DORA's massive Feb closure as an example
+        st.subheader("⛈️ Weather & Remarks")
+        st.caption("Berthing, Shifting, and Surveys are auto-deducted if not on demurrage.")
         sof_events = st.data_editor(
             pd.DataFrame([
                 {"Remark": "Port Closed (Weather)", "Start": datetime(2026, 2, 2, 12, 0), "End": datetime(2026, 2, 16, 23, 59)},
+                {"Remark": "Rain Interruption", "Start": datetime(2026, 3, 5, 1, 0), "End": datetime(2026, 3, 7, 15, 0)},
             ]), num_rows="dynamic", use_container_width=True
         )
 
-    # --- 4. ENGINE LOGIC ---
-    # A. Laycan & Start Logic
-    lc_start_dt = datetime.combine(laycan_start, time(0, 0))
-    if nor_option == "MANUAL START TIME":
-        official_start = manual_start_time
-    elif nor_option == "Custom: 12:00 PM Rule":
+    # --- 4. CALCULATION LOGIC (The "Brain") ---
+    
+    # NOR Trigger Logic
+    if nor_rule_type == "12 Hour Turn Time":
+        turn_time_expiry = nor_tendered + timedelta(hours=12)
+    elif nor_rule_type == "24h Turn Time":
+        turn_time_expiry = nor_tendered + timedelta(hours=24)
+    elif nor_rule_type == "LAFAMA Rule (12:00 PM Custom)":
         if nor_tendered.time() >= time(12, 0):
-            next_day = nor_tendered + timedelta(days=1)
-            official_start = datetime.combine(next_day.date(), time(8, 0))
+            turn_time_expiry = datetime.combine((nor_tendered + timedelta(days=1)).date(), time(8, 0))
         else:
-            official_start = datetime.combine(nor_tendered.date(), time(14, 0))
-    else:
-        official_start = nor_tendered + timedelta(hours=12)
+            turn_time_expiry = datetime.combine(nor_tendered.date(), time(14, 0))
+    else: # 6:00 PM / 8:00 AM Rule
+        if nor_tendered.time() < time(12, 0):
+            turn_time_expiry = datetime.combine(nor_tendered.date(), time(18, 0))
+        else:
+            turn_time_expiry = datetime.combine((nor_tendered + timedelta(days=1)).date(), time(8, 0))
 
-    # Laycan Rule: Clock triggers at official start OR loading commencement (whichever is sooner)
-    # BUT if arrival is before Laycan, loading commencement is the primary trigger.
-    if official_start < lc_start_dt:
-        laytime_start = max(official_start, ops_commenced)
+    # Official Start Logic (Laycan & Commencement)
+    lc_start_dt = datetime.combine(laycan_start, time(0, 0))
+    official_trigger = min(turn_time_expiry, ops_commenced)
+    
+    if official_trigger < lc_start_dt:
+        laytime_start = max(official_trigger, ops_commenced)
     else:
-        laytime_start = min(official_start, ops_commenced)
+        laytime_start = official_trigger
 
+    # Engine Execution
     allowed_sec = (qty / rate) * 86400
     curr = laytime_start
     used_sec = 0
-    deduct_sec = 0
-    step = 900 # 15-minute increments
+    total_deduct = 0
+    step = 600 # 10-minute resolution
 
     while used_sec < allowed_sec and curr < ops_completed:
         excluded = False
-        day = curr.weekday()
+        day = curr.weekday() # 5=Sat, 6=Sun
         
-        # Weekend Exclusions
-        if calendar_basis == "CUSTOM WEEKEND RULE":
-            if (day == 5 and curr.time() >= custom_wknd_stop) or (day == 6) or (day == 0 and curr.time() < custom_wknd_start):
+        # 1. Calendar Basis (Including Unless Used)
+        is_weekend = (calendar_basis in ["SSHEX", "SSHEX UNLESS USED"] and day >= 5) or \
+                     (calendar_basis in ["SHEX", "SHEX UNLESS USED"] and day == 6)
+        
+        if is_weekend:
+            if "UNLESS USED" in calendar_basis:
+                # If loading is actually happening, it counts.
+                # We assume loading is happening between ops_commenced and ops_completed
+                # except during manual weather remarks entered in the table.
+                is_working = (ops_commenced <= curr <= ops_completed)
+                if not is_working:
+                    excluded = True
+            else:
                 excluded = True
-        elif calendar_basis == "SSHEX" and day >= 5: excluded = True
-        elif calendar_basis == "SHEX" and day == 6: excluded = True
         
-        # Weather / Remarks
+        # 2. Weather & Keywords (Berthing/Shifting/Surveys)
         if not excluded:
             for _, row in sof_events.iterrows():
                 if pd.to_datetime(row['Start']) <= curr < pd.to_datetime(row['End']):
-                    excluded = True
-                    break
+                    rem = str(row['Remark']).upper()
+                    if any(k in rem for k in ["RAIN", "WIND", "WEATHER", "CLOSED", "SURVEY", "BERTH", "SHIFT", "SWELL"]):
+                        excluded = True
+                        break
         
-        if excluded: deduct_sec += step
+        if excluded: total_deduct += step
         else: used_sec += step
         curr += timedelta(seconds=step)
 
@@ -123,10 +138,11 @@ def tdc_full_app():
         diff_days = (final_expiry - ops_completed).total_seconds() / 86400
         res1.success(f"STATUS: IN DESPATCH\n\nTotal Earned: ${diff_days * desp_rate:,.2f}")
 
-    res2.write("**Calculation Audit:**")
-    res2.write(f"• Start Rule Applied: {nor_option}")
-    res2.write(f"• Final Expiry Date: {final_expiry.strftime('%Y-%m-%d %H:%M')}")
-    res2.write(f"• Total Time Deducted: {timedelta(seconds=deduct_sec)}")
+    res2.write("**Audit Summary:**")
+    res2.write(f"• Start Rule: {nor_rule_type}")
+    res2.write(f"• Laytime Start: {laytime_start.strftime('%Y-%m-%d %H:%M')}")
+    res2.write(f"• Final Expiry: {final_expiry.strftime('%Y-%m-%d %H:%M')}")
+    res2.write(f"• Time Deducted: {timedelta(seconds=total_deduct)}")
 
 if __name__ == "__main__":
-    tdc_full_app()
+    tdc_trade_platform()
