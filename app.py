@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, time
 
 st.set_page_config(page_title="TDC Trade Ops AI", layout="wide")
 
-# --- SESSION STATE FOR PERSISTENT DATA ---
+# --- SESSION STATE ---
 if 'nor_val' not in st.session_state:
     st.session_state.nor_val = datetime(2026, 3, 8, 7, 0)
 if 'commenced_val' not in st.session_state:
@@ -27,11 +27,8 @@ def tdc_final_engine():
         st.header("2. Working Rules")
         laycan_start = st.date_input("Laycan Start Date", value=datetime(2026, 3, 9))
         calendar_basis = st.selectbox("Calendar Basis", [
-            "SHINC", 
-            "SSHEX (Unless Used)", 
-            "SHEX (Unless Used)",
-            "SSHEX (Even if Used)", 
-            "SHEX (Even if Used)"
+            "SHINC", "SSHEX (Unless Used)", "SHEX (Unless Used)",
+            "SSHEX (Even if Used)", "SHEX (Even if Used)"
         ])
         nor_rule_type = st.selectbox("NOR Rule Type", [
             "12 Hour Turn Time", "24h Turn Time",
@@ -41,8 +38,6 @@ def tdc_final_engine():
     # --- 2. FILE UPLOADER ---
     st.subheader("📂 Document Management")
     uploaded_file = st.file_uploader("Upload SOF", type=["pdf", "docx", "jpg", "jpeg", "png", "xlsx"])
-    if uploaded_file:
-        st.success(f"✅ Document '{uploaded_file.name}' Active")
 
     st.markdown("---")
 
@@ -55,15 +50,19 @@ def tdc_final_engine():
         ops_e = st.datetime_input("Loading Completed", value=st.session_state.completed_val)
 
     with col2:
-        st.subheader("⛈️ Deductions")
+        st.subheader("⛈️ Deductions & interruptions")
+        st.caption("Keywords like CLEANING, SURVEY, BERTHING, and WEATHER are auto-deducted.")
         sof_events = st.data_editor(
-            pd.DataFrame([{"Remark": "Weather", "Start": datetime(2026, 1, 1), "End": datetime(2026, 1, 1)}]),
-            num_rows="dynamic", use_container_width=True
+            pd.DataFrame([
+                {"Remark": "Initial Draft Survey", "Start": datetime(2026, 3, 10, 18, 0), "End": datetime(2026, 3, 10, 20, 0)},
+                {"Remark": "Berthing in progress", "Start": datetime(2026, 3, 10, 20, 0), "End": datetime(2026, 3, 10, 21, 30)},
+                {"Remark": "Cleaning of holds", "Start": datetime(2026, 3, 11, 0, 0), "End": datetime(2026, 3, 11, 4, 0)},
+            ]), num_rows="dynamic", use_container_width=True
         )
 
     # --- 4. CALCULATION ---
     if rate > 0:
-        # Turn Time
+        # Turn Time Logic
         if nor_rule_type == "12 Hour Turn Time": tt_exp = nor_t + timedelta(hours=12)
         elif nor_rule_type == "24h Turn Time": tt_exp = nor_t + timedelta(hours=24)
         elif "LAFAMA" in nor_rule_type:
@@ -76,36 +75,30 @@ def tdc_final_engine():
         trigger = min(tt_exp, ops_s)
         l_start = max(trigger, ops_s) if trigger < lc_start else trigger
 
-        # Engine Logic
+        # Engine
         total_allowed_sec = (qty / rate) * 86400
         curr = l_start
         used_sec = 0
-        step = 60 # 1-minute precision
+        step = 60 
         
         while used_sec < total_allowed_sec:
             excluded = False
-            day = curr.weekday() # 5=Sat, 6=Sun
+            day = curr.weekday()
             
-            # THE FIX: HARD CALENDAR LOGIC
-            if "SSHEX" in calendar_basis and day >= 5: # Saturday & Sunday
-                if "Unless Used" in calendar_basis:
-                    # If we are loading, it COUNTS (not excluded)
-                    if not (ops_s <= curr <= ops_e): excluded = True
-                else: # Even if Used
-                    excluded = True
+            # Weekend Logic
+            if "SSHEX" in calendar_basis and day >= 5:
+                if "Unless Used" not in calendar_basis or not (ops_s <= curr <= ops_e): excluded = True
+            elif "SHEX" in calendar_basis and day == 6:
+                if "Unless Used" not in calendar_basis or not (ops_s <= curr <= ops_e): excluded = True
             
-            elif "SHEX" in calendar_basis and day == 6: # Sunday Only
-                if "Unless Used" in calendar_basis:
-                    if not (ops_s <= curr <= ops_e): excluded = True
-                else: # Even if Used
-                    excluded = True
-            
-            # Weather / Remark Check
+            # THE KEYWORD FIX: Cleaning, Surveys, Berthing
             if not excluded:
                 for _, row in sof_events.iterrows():
                     if pd.to_datetime(row['Start']) <= curr < pd.to_datetime(row['End']):
-                        excluded = True
-                        break
+                        rem = str(row['Remark']).upper()
+                        if any(k in rem for k in ["CLEANING", "SURVEY", "BERTHING", "BERTH", "WEATHER", "RAIN", "WIND", "SHIFT"]):
+                            excluded = True
+                            break
             
             if not excluded: used_sec += step
             curr += timedelta(seconds=step)
@@ -113,22 +106,19 @@ def tdc_final_engine():
         # --- 5. RESULTS ---
         st.markdown("---")
         res_col, audit_col = st.columns([2, 1])
-
         diff_sec = (curr - ops_e).total_seconds()
         days_diff = abs(diff_sec) / 86400
 
-        if diff_sec < 0: # Demurrage (Completed AFTER Expiry)
+        if diff_sec < 0: # Demurrage
             amt = days_diff * demu_rate
             res_col.error(f"🚨 STATUS: ON DEMURRAGE\n\n**Total Due: ${amt:,.2f}**")
-            audit_col.write(f"📉 Time Lost: {days_diff:.4f} days")
-        else: # Despatch (Completed BEFORE Expiry)
+        else: # Despatch
             amt = days_diff * desp_rate
             res_col.success(f"💰 STATUS: IN DESPATCH\n\n**Total Credit: ${amt:,.2f}**")
-            audit_col.write(f"📈 Time Saved: {days_diff:.4f} days")
 
-        audit_col.write(f"**Allowed:** {total_allowed_sec/86400:.4f} Days")
-        audit_col.write(f"**Start:** {l_start.strftime('%d-%b %Y %H:%M')}")
-        audit_col.write(f"**Expiry Wall:** {curr.strftime('%d-%b %Y %H:%M')}")
+        audit_col.write(f"📈 **Time Saved/Lost:** {days_diff:.4f} days")
+        audit_col.write(f"**Start:** {l_start.strftime('%d-%b %H:%M')}")
+        audit_col.write(f"**Expiry Wall:** {curr.strftime('%d-%b %H:%M')}")
 
 if __name__ == "__main__":
     tdc_final_engine()
