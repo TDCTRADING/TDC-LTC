@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, time
 
 st.set_page_config(page_title="TDC Trade Ops AI", layout="wide")
 
-def tdc_final_engine():
+def tdc_final_universal_engine():
     st.title("🚢 TDC International: Master Laytime Platform")
     
     # --- 1. SIDEBAR: CONTRACTUALS ---
@@ -32,39 +32,57 @@ def tdc_final_engine():
             "LAFAMA Rule (12:00 PM Custom)", "6:00 PM / 8:00 AM Rule"
         ])
 
-    # --- 2. MILESTONES ---
+    # --- 2. THE FILE UPLOADER (RESTORED) ---
+    st.subheader("📂 Document Management")
+    uploaded_file = st.file_uploader("Upload SOF (PDF, Word, Images, Excel)", type=["pdf", "docx", "jpg", "jpeg", "png", "xlsx"])
+    
+    if uploaded_file:
+        st.success(f"✅ Document '{uploaded_file.name}' is successfully attached and ready for audit.")
+
     st.markdown("---")
+
+    # --- 3. MILESTONES ---
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("⏱️ Key Timestamps")
+        # Pre-filled for quick testing, but fully editable
         nor_tendered = st.datetime_input("NOR Tendered", value=datetime(2026, 2, 1, 0, 1))
         ops_commenced = st.datetime_input("Loading Commenced", value=datetime(2026, 2, 28, 6, 0))
         ops_completed = st.datetime_input("Loading Completed", value=datetime(2026, 3, 9, 4, 0))
 
     with col2:
         st.subheader("⛈️ Deductions (Weather/Port)")
+        st.caption("Add Rain, Swell, or Port Closures here.")
         sof_events = st.data_editor(
             pd.DataFrame([
                 {"Remark": "Port Closed", "Start": datetime(2026, 2, 2, 12, 0), "End": datetime(2026, 2, 16, 23, 59)},
             ]), num_rows="dynamic", use_container_width=True
         )
 
-    # --- 3. CALCULATION ENGINE ---
-    if rate > 0:
-        # A. NOR Rule
-        if nor_rule_type == "12 Hour Turn Time": tt_expiry = nor_tendered + timedelta(hours=12)
-        elif nor_rule_type == "24h Turn Time": tt_expiry = nor_tendered + timedelta(hours=24)
-        elif nor_rule_type == "LAFAMA Rule":
-            tt_expiry = datetime.combine(nor_tendered.date(), time(14, 0)) if nor_tendered.time() < time(12,0) else datetime.combine((nor_tendered + timedelta(days=1)).date(), time(8, 0))
+    # --- 4. CALCULATION ENGINE ---
+    if rate > 0 and qty > 0:
+        # Turn Time Logic
+        if nor_rule_type == "12 Hour Turn Time": 
+            tt_expiry = nor_tendered + timedelta(hours=12)
+        elif nor_rule_type == "24h Turn Time": 
+            tt_expiry = nor_tendered + timedelta(hours=24)
+        elif nor_rule_type == "LAFAMA Rule (12:00 PM Custom)":
+            if nor_tendered.time() < time(12, 0):
+                tt_expiry = datetime.combine(nor_tendered.date(), time(14, 0))
+            else:
+                tt_expiry = datetime.combine((nor_tendered + timedelta(days=1)).date(), time(8, 0))
         else: # 6/8 Rule
-            tt_expiry = datetime.combine(nor_tendered.date(), time(18, 0)) if nor_tendered.time() < time(12,0) else datetime.combine((nor_tendered + timedelta(days=1)).date(), time(8, 0))
+            if nor_tendered.time() < time(12, 0):
+                tt_expiry = datetime.combine(nor_tendered.date(), time(18, 0))
+            else:
+                tt_expiry = datetime.combine((nor_tendered + timedelta(days=1)).date(), time(8, 0))
 
-        # B. Start Logic
+        # Start Logic (Laycan vs turn-time)
         lc_start_dt = datetime.combine(laycan_start, time(0, 0))
         trigger = min(tt_expiry, ops_commenced)
         laytime_start = max(trigger, ops_commenced) if trigger < lc_start_dt else trigger
 
-        # C. The Loop
+        # Calculation Loop
         allowed_sec = (qty / rate) * 86400
         curr = laytime_start
         used_sec = 0
@@ -77,9 +95,11 @@ def tdc_final_engine():
             
             # Weekend Check
             if "SSHEX" in calendar_basis and day >= 5:
-                if "Unless Used" not in calendar_basis or not (ops_commenced <= curr <= ops_completed): excluded = True
+                if "Unless Used" not in calendar_basis or not (ops_commenced <= curr <= ops_completed):
+                    excluded = True
             elif "SHEX" in calendar_basis and day == 6:
-                if "Unless Used" not in calendar_basis or not (ops_commenced <= curr <= ops_completed): excluded = True
+                if "Unless Used" not in calendar_basis or not (ops_commenced <= curr <= ops_completed):
+                    excluded = True
             
             # Weather Check
             if not excluded:
@@ -92,24 +112,22 @@ def tdc_final_engine():
             else: used_sec += step
             curr += timedelta(seconds=step)
 
-        # --- 4. THE RESULTS (FIXED) ---
+        # --- 5. RESULTS ---
         st.markdown("---")
         res_col1, res_col2 = st.columns(2)
 
-        if ops_completed > curr: # Demurrage Case
+        if ops_completed > curr: # Demurrage
             diff = (ops_completed - curr).total_seconds() / 86400
             amt = diff * demu_rate
             res_col1.error(f"⚠️ ON DEMURRAGE\n\nTotal Owed: ${amt:,.2f}")
-            res_col2.write(f"**Time on Demurrage:** {diff:.4f} days")
-        else: # Despatch Case
+        else: # Despatch
             diff = (curr - ops_completed).total_seconds() / 86400
             amt = diff * desp_rate
             res_col1.success(f"✅ IN DESPATCH\n\nTotal Earned: ${amt:,.2f}")
-            res_col2.write(f"**Time Saved (Despatch):** {diff:.4f} days")
 
-        res_col2.write(f"**Allowed Time:** {allowed_sec/86400:.4f} days")
         res_col2.write(f"**Laytime Start:** {laytime_start.strftime('%Y-%m-%d %H:%M')}")
-        res_col2.write(f"**Expiry Date:** {curr.strftime('%Y-%m-%d %H:%M')}")
+        res_col2.write(f"**Expiry Date (The Wall):** {curr.strftime('%Y-%m-%d %H:%M')}")
+        res_col2.write(f"**Time Saved/Exceeded:** {diff:.4f} days")
 
 if __name__ == "__main__":
-    tdc_final_engine()
+    tdc_final_universal_engine()
